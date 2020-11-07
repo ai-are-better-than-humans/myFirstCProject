@@ -185,7 +185,7 @@ int main(int argc, char* argv[])
         }
     }
 
-    FILE *fp = fopen("C:\\Users\\mlfre\\OneDrive\\Desktop\\img_temp\\pixels.txt", "w");
+    FILE *fp = fopen("<Desktop Location>\\Desktop\\img_temp\\pixels.txt", "w");
     for(int i = 0; i < fpng.iheader.width*fpng.iheader.height; i++){
 
         if(fpng.palette.indexCount == 0){
@@ -201,7 +201,7 @@ int main(int argc, char* argv[])
     }
     fprintf(fp, "\n");
 
-    FILE *fp2 = fopen("C:\\Users\\mlfre\\OneDrive\\Desktop\\img_temp\\info.txt", "w");
+    FILE *fp2 = fopen("<Desktop Location>\\Desktop\\img_temp\\info.txt", "w");
     fprintf(fp2, "%d,", fpng.iheader.width);
     fprintf(fp2, "%d,", fpng.iheader.height);
     if(fpng.palette.indexCount == 0) fprintf(fp2, "%d\n", fpng.iheader.channels);
