@@ -1,10 +1,11 @@
-//TODO: make errors more descriptive, add more restrictions to png data formatting, optimize code for speed
+//TODO: make errors more descriptive, add more restrictions to png data formatting, optimize code for speed, make code portable?? idrk lmao
 
 
 /*
 References:
   wikipedia.org/wiki/Portable_Network_Graphics
   libpng.org/pub/png
+  w3.org/TR/PNG
   zlib.net
 
 
@@ -72,8 +73,8 @@ In Order to actually GET the picture from a PNG, you need to:
 #include "zlib.h"
 
 
-#define bytesToInt(a, b, c, d) (a << 24 | b << 16 | c << 8 | d)
-#define compType(a, b) (a[0]==b[0] && a[1]==b[1] && a[2]==b[2] && a[3]==b[3])
+#define bytesToInt(a, b, c, d) ((a) << 24 | (b) << 16 | (c) << 8 | (d))
+#define compType(a, b) ((a)[0]==(b)[0] && (a)[1]==(b)[1] && (a)[2]==(b)[2] && (a)[3]==(b)[3])
 
 // List of Critical Chunk Types
 const unsigned char IEND_CHUNK[4] = {'I', 'E', 'N', 'D'};
@@ -102,6 +103,10 @@ const unsigned char ZTXT_CHUNK[4] = {'z', 'T', 'X', 't'};
 
 // An Example Of A Valid PNG Header
 const unsigned char SIGNATURE[8] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+// An Array Which Acts As A Lookup Table For The Error Detection Process
+unsigned long CRC_TABLE[256];
+// Used To See If We Still Need To Compute The CRC Table, Since Its Quicker Than Having It Predefined
+static int CRC_TABLE_COMPUTED = 0;
 
 
 typedef struct Pix {
@@ -129,10 +134,10 @@ typedef struct IHDR {
 } IHDR;
 typedef struct PNG {
     Chunk* chunks;
-    int chunkLength;
+    int chunkCount;
 
     unsigned char* bytes;
-    long int byteLength;
+    long int byteCount;
 
     IHDR iheader;
     PLTE palette;
@@ -149,20 +154,24 @@ int getChunkCount(unsigned char*);
 int hasValidBitDepth(int, int);
 int hasValidSignature(unsigned char*);
 
+void freePNG(PNG);
+void makeCRCTable(void);
 void throwError(char*, int, int);
 void getBytesFromPath(char*, long int*, unsigned char**);
+
 unsigned char* getImgFromChunks(Chunk*, IHDR);
+unsigned long CRC32(unsigned long, unsigned char*, int);
 Pix* getPixelsFromImg(unsigned char*, IHDR, PLTE);
 
 
-
+// An example of a program which takes a PNG, and writes its channels, width, height, and pixel information to two files
 int main(int argc, char* argv[])
 {
-    int output_text = 1;
+    int output_text = 1; // Debugging variable
     PNG fpng = getPNGFromPath(argv[1]);
 
     if(output_text){
-        printf("\n\nthere are %d chunks\n", fpng.chunkLength);
+        printf("\n\nthere are %d chunks\n", fpng.chunkCount);
         printf("width: %d - height: %d\n", fpng.iheader.width, fpng.iheader.height);
         printf("color channels: %d\n", fpng.iheader.channels);
         printf("bit depth: %d\n", fpng.iheader.bitd);
@@ -176,16 +185,18 @@ int main(int argc, char* argv[])
         }
         printf("\n#-#-#-#-#-#-#-#-#-#-#\n");
 
-        for(int i = 0; i < fpng.chunkLength; i++){
+        for(int i = 0; i < fpng.chunkCount; i++){
             printf("value of type: %.4s\n", fpng.chunks[i].type);
             printf("value of data: %.4s\n", fpng.chunks[i].data);
             printf("value of length: %d\n", fpng.chunks[i].length);
             printf("value of crc: %.4s\n\n", fpng.chunks[i].crc);
-            printf(i != fpng.chunkLength-1 ? "--------------------\n" : "\n");
+            printf(i != fpng.chunkCount-1 ? "--------------------\n" : "\n");
         }
     }
 
-    FILE *fp = fopen("<Desktop Location>\\Desktop\\img_temp\\pixels.txt", "w");
+    FILE *fp = fopen("C:\\Users\\mlfre\\OneDrive\\Desktop\\img_temp\\pixels.txt", "w");
+    throwError("ERROR: could not open pixels.txt\n\n", fp == NULL, EXIT_FAILURE);
+
     for(int i = 0; i < fpng.iheader.width*fpng.iheader.height; i++){
 
         if(fpng.palette.indexCount == 0){
@@ -201,7 +212,9 @@ int main(int argc, char* argv[])
     }
     fprintf(fp, "\n");
 
-    FILE *fp2 = fopen("<Desktop Location>\\Desktop\\img_temp\\info.txt", "w");
+    FILE *fp2 = fopen("C:\\Users\\mlfre\\OneDrive\\Desktop\\img_temp\\info.txt", "w");
+    throwError("ERROR: could not open info.txt\n\n", fp2 == NULL, EXIT_FAILURE);
+
     fprintf(fp2, "%d,", fpng.iheader.width);
     fprintf(fp2, "%d,", fpng.iheader.height);
     if(fpng.palette.indexCount == 0) fprintf(fp2, "%d\n", fpng.iheader.channels);
@@ -209,6 +222,8 @@ int main(int argc, char* argv[])
 
     fclose(fp);
     fclose(fp2);
+
+    freePNG(fpng);
     return 0;
 }
 
@@ -217,9 +232,9 @@ int getChunkCount(unsigned char* bytes)
     int count = 0;
     int length = 0;
     int next_seg = 7;
-    unsigned char type[4];
+    unsigned char type[4] = {0, 0, 0, 0};
 
-    while(1){
+    while(!compType(type, IEND_CHUNK)){
         length = bytesToInt(bytes[next_seg+1], bytes[next_seg+2],
                             bytes[next_seg+3], bytes[next_seg+4]);
 
@@ -228,13 +243,12 @@ int getChunkCount(unsigned char* bytes)
         type[2] = bytes[next_seg+7];
         type[3] = bytes[next_seg+8];
 
-        if(compType(type, IEND_CHUNK)) break;
         next_seg+=length+12;
         count++;
 
     }
 
-    return count+1;
+    return count;
 }
 
 void throwError(char* message, int condition, int status)
@@ -243,6 +257,15 @@ void throwError(char* message, int condition, int status)
         fprintf(stderr, message);
         exit(status);
     }
+}
+
+void freePNG(PNG fpng)
+{
+    free(fpng.bytes);
+    for(int i = 0; i < fpng.chunkCount; i++) free(fpng.chunks[i].data);
+    free(fpng.chunks);
+    free(fpng.palette.indexes);
+    free(fpng.pixels);
 }
 
 void getBytesFromPath(char* path, long int* length, unsigned char** dest)
@@ -265,8 +288,8 @@ PNG getPNGFromPath(char* path)
     PNG new_png;
     int channels[7] = {1, 0, 3, 1, 2, 0, 4};
 
-    getBytesFromPath(path, &new_png.byteLength, &new_png.bytes);
-    new_png.chunkLength = getChunkCount(new_png.bytes);
+    getBytesFromPath(path, &new_png.byteCount, &new_png.bytes);
+    new_png.chunkCount = getChunkCount(new_png.bytes);
     new_png.chunks = getChunksFromBytes(new_png.bytes);
 
     new_png.iheader.width = bytesToInt(new_png.chunks[0].data[0], new_png.chunks[0].data[1],
@@ -286,7 +309,7 @@ PNG getPNGFromPath(char* path)
     throwError("ERROR: PNG has an invalid CRC\n\n", !hasValidCRC(new_png.chunks), EXIT_FAILURE);
     throwError("ERROR: PNG has an invalid signature\n\n", !hasValidSignature(new_png.bytes), EXIT_FAILURE);
 
-    new_png.palette = getPaletteFromChunks(new_png.chunks, new_png.chunkLength);
+    new_png.palette = getPaletteFromChunks(new_png.chunks, new_png.chunkCount);
     unsigned char* temp = getImgFromChunks(new_png.chunks, new_png.iheader);
     new_png.pixels = getPixelsFromImg(temp, new_png.iheader, new_png.palette);
 
@@ -300,29 +323,28 @@ Chunk* getChunksFromBytes(unsigned char* bytes)
     int chunks = 0;
     Chunk* chunk_array = (Chunk*) malloc(sizeof(Chunk)*getChunkCount(bytes));
 
-    while(1){
+    while(!compType(chunk_array[chunks-1].type, IEND_CHUNK)){
         chunk_array[chunks].length = bytesToInt(bytes[next_seg+1], bytes[next_seg+2],
-                                      bytes[next_seg+3], bytes[next_seg+4]);
+                                                bytes[next_seg+3], bytes[next_seg+4]);
 
         chunk_array[chunks].type[0] = bytes[next_seg+5];
         chunk_array[chunks].type[1] = bytes[next_seg+6];
         chunk_array[chunks].type[2] = bytes[next_seg+7];
         chunk_array[chunks].type[3] = bytes[next_seg+8];
 
-        chunk_array[chunks].data = malloc(chunk_array[chunks].length);
+        chunk_array[chunks].data = calloc(chunk_array[chunks].length, 1);
+
         if(chunk_array[chunks].length > 0){
             for(int cnt = 0; cnt < chunk_array[chunks].length; cnt++){
                 chunk_array[chunks].data[cnt] = bytes[next_seg+9+cnt];
             }
         }
-        else chunk_array[chunks].data = NULL;
 
         chunk_array[chunks].crc[0] = bytes[next_seg+chunk_array[chunks].length+9];
         chunk_array[chunks].crc[1] = bytes[next_seg+chunk_array[chunks].length+10];
         chunk_array[chunks].crc[2] = bytes[next_seg+chunk_array[chunks].length+11];
         chunk_array[chunks].crc[3] = bytes[next_seg+chunk_array[chunks].length+12];
 
-        if(compType(chunk_array[chunks].type, IEND_CHUNK)) break;
         next_seg+=chunk_array[chunks].length+12;
         chunks++;
 
@@ -330,6 +352,35 @@ Chunk* getChunksFromBytes(unsigned char* bytes)
 
     return chunk_array;
 }
+
+void makeCRCTable(void){
+    unsigned long c;
+
+    for (int n = 0; n < 256; n++) {
+        c = (unsigned long) n;
+
+        for (int k = 0; k < 8; k++) {
+            c = c & 1 ? 0xedb88320L ^ (c >> 1) : c >> 1;
+        }
+        CRC_TABLE[n] = c;
+    }
+}
+
+unsigned long CRC32(unsigned long crc, unsigned char *buf, int len){
+    unsigned long c = crc ^ 0xffffffffL;
+
+    if(!CRC_TABLE_COMPUTED){
+        makeCRCTable();
+        CRC_TABLE_COMPUTED = 1;
+    }
+
+    for (int n = 0; n < len; n++) {
+        c = CRC_TABLE[(c ^ buf[n]) & 0xff] ^ (c >> 8);
+    }
+
+    return c ^ 0xffffffffL;
+}
+
 
 int hasValidSignature(unsigned char* bytes)
 {
@@ -350,23 +401,23 @@ int hasValidBitDepth(int bitd, int colort)
         case 4:
         case 6:
             return bitd == 16;
+        default:
+            return 0;
     }
-
-    return 0;
 }
 
 int hasValidCRC(Chunk* chunks)
 {
     int count = 0;
 
-    uLong type_crc;
-    uLong chunk_crc;
-    uLong actual_crc;
+    unsigned long type_crc;
+    unsigned long chunk_crc;
+    unsigned long actual_crc;
 
     while(!compType(chunks[count].type, IEND_CHUNK))
     {
-        type_crc = crc32(0, chunks[count].type, 4);
-        chunk_crc = crc32(type_crc, chunks[count].data, chunks[count].length);
+        type_crc = CRC32(0L, chunks[count].type, 4);
+        chunk_crc = CRC32(type_crc, chunks[count].data, chunks[count].length);
         actual_crc = bytesToInt(chunks[count].crc[0], chunks[count].crc[1],
                                 chunks[count].crc[2], chunks[count].crc[3]);
 
